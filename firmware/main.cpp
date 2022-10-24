@@ -24,8 +24,12 @@ const uint IO_1_PIN = 12;
 const uint IO_2_PIN = 11;
 
 const float max_voltage = 11.0;
-const float cutoff_voltages[] = {0, 3.75, 7.45};
+const float per_cell_cutoff = 2.8;
+const float cutoff_voltages[] = {0, per_cell_cutoff, per_cell_cutoff*2};
 uint battery_cells = 0;
+
+enum Status {NO_SIGNAL, ACTIVE, OVERVOLTAGE, CUTOFF};
+Status status = NO_SIGNAL;
 
 IBus ibus(uart0, 0, 1);
 
@@ -33,6 +37,15 @@ Motor motor_1(MOT_1A_PIN, MOT_1B_PIN);
 Motor motor_2(MOT_2A_PIN, MOT_2B_PIN);
 Motor motor_3(MOT_3A_PIN, MOT_3B_PIN);
 Servo servo_1(IO_1_PIN);
+Servo servo_2(IO_2_PIN);
+
+float get_bat_voltage() {
+    adc_select_input(1);
+    const float conversionFactor = 3.3f / (1 << 12);
+    float voltage = ((float)adc_read() * conversionFactor);
+    if (voltage < 0) voltage = 0;
+    return 4.3*voltage;
+}
 
 void core1_entry() {
     while (!stdio_usb_connected()) sleep_ms(100);
@@ -91,9 +104,65 @@ void core1_entry() {
                 case '6':
                     // Display values
                     printf("\nDebug display:\n");
+                    printf("1 - Status\n");
+                    printf("2 - Channel values\n");
+                    printf("3 - Voltages\n");
                     printf("0 - Back\n");
-                    getchar();
-                    valid_input = true;
+                    do {
+                        switch(getchar()) {
+                            case '1':
+                                printf("\nStatus:\n");
+                                while (1) {
+                                    switch (status) {
+                                        case NO_SIGNAL:
+                                            printf("NO SIGNAL       \n");
+                                            break;
+                                        case ACTIVE:
+                                            printf("ACTIVE          \n");
+                                            break;
+                                        case OVERVOLTAGE:
+                                            printf("OVERVOLTAGE     \n");
+                                            break;
+                                        case CUTOFF:
+                                            printf("CUTOFF          \n");
+                                            break;
+                                        default:
+                                            printf("UNKNOWN         \n");
+                                            break;
+                                    }
+                                    printf("0 -Exit\n");
+                                    if (getchar_timeout_us(50000) == '0') break;
+                                    puts( "\033[3A" );
+                                }
+                                valid_input = true;
+                                break;
+                            case '2':
+                                printf("\nChannel values:\n");
+                                while (1) {
+                                    printf("%04d %04d %04d %04d\n", ibus.getChannel(0), ibus.getChannel(1), ibus.getChannel(2), ibus.getChannel(3));
+                                    printf("%04d %04d %04d %04d\n", ibus.getChannel(4), ibus.getChannel(5), ibus.getChannel(6), ibus.getChannel(7));
+                                    printf("%04d %04d %04d %04d\n", ibus.getChannel(8), ibus.getChannel(9), ibus.getChannel(10), ibus.getChannel(11));
+                                    printf("%04d %04d\n", ibus.getChannel(12), ibus.getChannel(13));
+                                    printf("0 -Exit\n");
+                                    if (getchar_timeout_us(50000) == '0') break;
+                                    puts( "\033[6A" );
+                                }
+                                valid_input = true;
+                                break;
+                            case '3':
+                                printf("\nVoltages:\n");
+                                while (1) {
+                                    printf("Battery: %02.2fV\n", get_bat_voltage());
+                                    printf("0 -Exit\n");
+                                    if (getchar_timeout_us(50000) == '0') break;
+                                    puts( "\033[3A" );
+                                }
+                                valid_input = true;
+                                break;
+                            default:
+                                break;
+                        }
+                    } while (!valid_input);
                     break;
                 case 'r':
                 case '7':
@@ -115,16 +184,6 @@ void core1_entry() {
     }
 }
 
-// 0 -> 0.28
-// 1.92 -> 2.15
-float get_bat_voltage() {
-    adc_select_input(1);
-    const float conversionFactor = 3.3f / (1 << 12);
-    float voltage = ((float)adc_read() * conversionFactor);
-    if (voltage < 0) voltage = 0;
-    return 4.3*voltage;
-}
-
 int main() {
     stdio_init_all();
 
@@ -140,14 +199,11 @@ int main() {
 
     // Get battery voltage
     float initial_bat_voltage = get_bat_voltage();
-    ibus.addSensor(IBus::SENSOR_INTV, 1);
     
     // Check we aren't about to fry the motor drivers
     if (initial_bat_voltage > max_voltage) {
-        while (1) {
-            printf("OVERVOLTAGE! %.2fV\n", initial_bat_voltage);
-            sleep_ms(500);
-        };
+        status = OVERVOLTAGE;
+        while (1) sleep_ms(100);
     }
 
     // Determine lipo cell count
@@ -171,13 +227,10 @@ int main() {
 
     multicore_launch_core1(core1_entry);
 
-    initial_bat_voltage = get_bat_voltage();
-
     uint i = 0;
     while (1) {
-        // Read battery voltage and update telemetry
+        // Read battery voltage
         float battery_voltage = get_bat_voltage();
-        ibus.setSensor(0, battery_voltage/100);
 
         // Check if battery has reached discharge limit
         if (battery_voltage < cutoff_voltages[battery_cells]) {
@@ -186,22 +239,29 @@ int main() {
             motor_2.set_speed(0);
             motor_3.set_speed(0);
             servo_1.set_value(0);
+            servo_2.set_value(0);
+            status = CUTOFF;
             while (1) {
-                printf("BATTERY CUTOFF! %.2fV\n", battery_voltage);
+                // printf("BATTERY CUTOFF! %.2fV\n", battery_voltage);
                 gpio_put(BUILT_IN_LED_PIN, 1);
                 sleep_ms(250);
                 gpio_put(BUILT_IN_LED_PIN, 0);
                 sleep_ms(250);
             }
+        } else if (battery_voltage > max_voltage) {
+            status = OVERVOLTAGE;
+            while (1) sleep_ms(100);
         }
 
         ibus.update();
         if (ibus.msSincePacket() < 10) {
             gpio_put(BUILT_IN_LED_PIN, 1);
-            motor_1.set_speed(ibus.channels[0]-1500);
-            motor_2.set_speed(ibus.channels[1]-1500);
-            motor_3.set_speed(ibus.channels[3]-1500);
-            servo_1.set_value(ibus.channels[2]-1000);
+            motor_1.set_speed(ibus.getChannel(0)-1500);
+            motor_2.set_speed(ibus.getChannel(1)-1500);
+            motor_3.set_speed(ibus.getChannel(3)-1500);
+            servo_1.set_value(ibus.getChannel(2)-1000);
+            servo_2.set_value(ibus.getChannel(2)-1000);
+            status = ACTIVE;
         }
         else {
             gpio_put(BUILT_IN_LED_PIN, 0);
@@ -209,6 +269,8 @@ int main() {
             motor_2.set_speed(0);
             motor_3.set_speed(0);
             servo_1.set_value(0);
+            servo_2.set_value(0);
+            status = NO_SIGNAL;
         }
     }
 }

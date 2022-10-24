@@ -1,4 +1,5 @@
 #include "ibus.h"
+#include "stdio.h"
 
 IBus::IBus(uart_inst_t* uart_instance, uint pinTx, uint pinRx) {
     this->uart = uart_instance;
@@ -11,11 +12,13 @@ IBus::IBus(uart_inst_t* uart_instance, uint pinTx, uint pinRx) {
 }
 
 void IBus::update() {
+    enum State {GET_LENGTH, GET_DATA, GET_CHKSUML, GET_CHKSUMH, DISCARD};
+
     static uint32_t last_byte_ms;
     static State state;
     static uint8_t buffer[PROTOCOL_LENGTH];     // message buffer
     static uint8_t ptr;                         // pointer in buffer
-    static uint8_t length;                         // message length
+    static uint8_t length;                      // message length
     static uint16_t chksum;                     // checksum calculation
     static uint8_t lchksum;                     // checksum lower byte received
 
@@ -62,37 +65,11 @@ void IBus::update() {
                         for (uint8_t i = 1; i < PROTOCOL_CHANNELS * 2 + 1; i += 2) {
                             channels[i / 2] = buffer[i] | (buffer[i + 1] << 8);
                         }
-                    } else {
-                        // Sensor commands
-                        uint8_t address = buffer[0] & 0x0f;
-                        if (address<=sensorCount && address>0 && length==1) {
-                            sensorInfo *s = &sensors[address-1];
-
-                            switch (buffer[0] & 0x00) {
-                                case PROTOCOL_COMMAND_DISCOVER:
-                                    uart_putc(uart, 0x04);
-                                    uart_putc(uart, PROTOCOL_COMMAND_DISCOVER + address);
-                                    chksum = 0xFFFF - (0x04 + PROTOCOL_COMMAND_DISCOVER + address);
-                                case PROTOCOL_COMMAND_TYPE:
-                                    uart_putc(uart, 0x06);
-                                    uart_putc(uart, PROTOCOL_COMMAND_TYPE + address);
-                                    uart_putc(uart, s->type);
-                                    uart_putc(uart, s->length);
-                                    chksum = 0xFFFF - (0x06 + PROTOCOL_COMMAND_TYPE + address + s->type + s->length);
-                                    break;
-                                default:
-                                    break;
-                            }       
-                        }
-
-                        if (address > 0) {
-                            uart_putc(uart, chksum & 0x0ff);
-                            uart_putc(uart, chksum >> 8);             
-                        }
                     }
                     last_packet_ms = to_ms_since_boot(get_absolute_time());;
                 }
                 state = DISCARD;
+                break;
 
         default:
             break;
@@ -104,19 +81,6 @@ uint32_t IBus::msSincePacket() {
     return to_ms_since_boot(get_absolute_time())-last_packet_ms;
 }
 
-uint8_t IBus::addSensor(SensorType type, uint8_t length) {
-  // Add a sensor, return sensor number
-  if (length!=2 && length!=4) length = 2;
-  if (sensorCount < SENSORMAX) {
-    sensorInfo *s = &sensors[sensorCount];
-    s->type = type;
-    s->length = length;
-    s->value = 0;
-    sensorCount++;
-  }
-  return sensorCount;
-}
-
-void IBus::setSensor(uint8_t address, uint16_t value) {
-    if (address<=sensorCount && address>0) sensors[address-1].value = value;
-}
+uint16_t IBus::getChannel(uint index) {
+    return channels[index];
+} 
