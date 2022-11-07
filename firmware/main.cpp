@@ -24,7 +24,7 @@ const uint IO_1_PIN = 12;
 const uint IO_2_PIN = 11;
 
 const float max_voltage = 11.0;
-const float per_cell_cutoff = 2.8;
+const float per_cell_cutoff = 1.0;
 const float cutoff_voltages[] = {0, per_cell_cutoff, per_cell_cutoff*2};
 uint battery_cells = 0;
 
@@ -184,6 +184,11 @@ void core1_entry() {
     }
 }
 
+int abs(int val) {
+    if (val < 0) return -val;
+    return val;
+}
+
 int main() {
     stdio_init_all();
 
@@ -238,8 +243,8 @@ int main() {
             motor_1.set_speed(0);
             motor_2.set_speed(0);
             motor_3.set_speed(0);
-            servo_1.set_value(0);
-            servo_2.set_value(0);
+            servo_1.disable();
+            servo_2.disable();
             status = CUTOFF;
             while (1) {
                 // printf("BATTERY CUTOFF! %.2fV\n", battery_voltage);
@@ -256,8 +261,12 @@ int main() {
         ibus.update();
         if (ibus.msSincePacket() < 10) {
             gpio_put(BUILT_IN_LED_PIN, 1);
-            motor_1.set_speed(ibus.getChannel(0)-1500);
-            motor_2.set_speed(ibus.getChannel(1)-1500);
+            int fb = ibus.getChannel(0)-1500;
+            int lr = ibus.getChannel(1)-1500;
+            motor_1.set_speed(fb+lr);
+            motor_2.set_speed(fb-lr);
+            // motor_1.set_speed(ibus.getChannel(0)-1500);
+            // motor_2.set_speed(ibus.getChannel(1)-1500);
             motor_3.set_speed(ibus.getChannel(3)-1500);
             servo_1.set_value(ibus.getChannel(2)-1000);
             servo_2.set_value(ibus.getChannel(2)-1000);
@@ -268,8 +277,8 @@ int main() {
             motor_1.set_speed(0);
             motor_2.set_speed(0);
             motor_3.set_speed(0);
-            servo_1.set_value(0);
-            servo_2.set_value(0);
+            servo_1.disable();
+            servo_2.disable();
             status = NO_SIGNAL;
         }
     }
